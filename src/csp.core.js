@@ -8,7 +8,7 @@ var timers = require("./impl/timers");
 
 function spawn(gen, creator) {
   var ch = channels.chan(buffers.fixed(1));
-  (new process.Process(gen, function(value) {
+  var proc = (new process.Process(gen, function(value) {
     if (value === channels.CLOSED) {
       ch.close();
     } else {
@@ -16,7 +16,11 @@ function spawn(gen, creator) {
         ch.close();
       });
     }
-  }, creator)).run();
+  }, creator));
+
+  // FIXME: better way to expose process?
+  ch.process = proc;
+  proc.run();
   return ch;
 };
 
@@ -58,10 +62,11 @@ module.exports = {
   take: process.take,
   offer: process.offer,
   poll: process.poll,
-  sleep: process.sleep,
   alts: process.alts,
   putAsync: process.put_then_callback,
   takeAsync: process.take_then_callback,
+  preventClose: process.preventClose,
+  takeOrReturn: process.takeOrReturn,
   NO_VALUE: process.NO_VALUE,
 
   timeout: timers.timeout

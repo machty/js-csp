@@ -2,7 +2,9 @@
 
 var dispatch = require("./dispatch");
 var select = require("./select");
-var Channel = require("./channels").Channel;
+var channels = require("./channels");
+var Channel = channels.Channel;
+var buffers = require("./buffers");
 
 var NO_VALUE = {};
 
@@ -42,6 +44,7 @@ var Process = function(gen, onFinish, creator) {
   this.creatorFunc = creator;
   this.finished = false;
   this.onFinish = onFinish;
+  this.closeChannel = channels.chan(buffers.fixed(1));
 };
 
 var Instruction = function(op, data) {
@@ -51,8 +54,17 @@ var Instruction = function(op, data) {
 
 var TAKE = "take";
 var PUT = "put";
-var SLEEP = "sleep";
 var ALTS = "alts";
+var TAKE_OR_RETURN = "take_or_return";
+var PREVENT_CLOSE = "prevent_close";
+
+function ErrorResult(value) {
+  this.value = value;
+}
+
+function ReturnResult(value) {
+  this.value = value;
+}
 
 // TODO FIX XXX: This is a (probably) temporary hack to avoid blowing
 // up the stack, but it means double queueing when the value is not
@@ -76,6 +88,11 @@ Process.prototype._done = function(value) {
   }
 };
 
+Process.prototype.close = function(value) {
+  put_then_callback(this.closeChannel, new ReturnResult(value));
+  this.closeChannel.close();
+};
+
 Process.prototype.run = function(response) {
   if (this.finished) {
     return;
@@ -84,7 +101,14 @@ Process.prototype.run = function(response) {
   // TODO: Shouldn't we (optionally) stop error propagation here (and
   // signal the error through a channel or something)? Otherwise the
   // uncaught exception will crash some runtimes (e.g. Node)
-  var iter = this.gen.next(response);
+  var iter;
+  if (response instanceof ErrorResult) {
+    iter = this.gen['throw'](response.value);
+  } else if (response instanceof ReturnResult) {
+    iter = this.gen['return'](response.value);
+  } else {
+    iter = this.gen.next(response);
+  }
   if (iter.done) {
     this._done(iter.value);
     return;
@@ -93,46 +117,72 @@ Process.prototype.run = function(response) {
   var ins = iter.value;
   var self = this;
 
-  if (ins instanceof Instruction) {
+  if (ins && typeof ins.then === 'function') {
+    var promiseChannel = channels.chan();
+    ins.then(function(value) {
+      put_then_callback(promiseChannel, value);
+    }, function(value) {
+      put_then_callback(promiseChannel, new ErrorResult(value));
+    });
+
+    altsWithClose(this, [promiseChannel]);
+  }
+  else if (ins instanceof Instruction) {
     switch (ins.op) {
     case PUT:
-      var data = ins.data;
-      put_then_callback(data.channel, data.value, function(ok) {
-        self._continue(ok);
-      });
+      altsWithClose(this, [[ins.data.channel, ins.data.value]]);
       break;
 
     case TAKE:
-      var channel = ins.data;
-      take_then_callback(channel, function(value) {
-        self._continue(value);
+      altsWithClose(this, [ins.data]);
+      break;
+
+    case TAKE_OR_RETURN:
+      altsWithClose(this, [ins.data], null, function(altsResult) {
+        var value = altsResult.value;
+        return value === channels.CLOSED ? new ReturnResult(value) : value;
       });
       break;
 
-    case SLEEP:
-      var msecs = ins.data;
-      dispatch.queue_delay(function() {
-        self.run(null);
-      }, msecs);
+    case ALTS:
+      altsWithClose(this, ins.data.operations, ins.data.options, function(altsResult) {
+        return altsResult;
+      });
       break;
 
-    case ALTS:
-      select.do_alts(ins.data.operations, function(result) {
-        self._continue(result);
-      }, ins.data.options);
+    case PREVENT_CLOSE:
+      this.preventClose = true;
+      var data = ins.data;
+      if (!this.closeChannel) {
+      }
+      this._continue(closeChannel);
       break;
+
     }
   }
   else if(ins instanceof Channel) {
-    var channel = ins;
-    take_then_callback(channel, function(value) {
-      self._continue(value);
-    });
+    altsWithClose(this, [ins]);
   }
   else {
     this._continue(ins);
   }
 };
+
+function altsWithClose(process, _operations, options, mapper) {
+  var operations = _operations.slice();
+
+  if (!process.manualClose) {
+    operations.unshift(process.closeChannel);
+  }
+
+  select.do_alts(operations, function(result) {
+    if (result.channel === process.closeChannel) {
+      process._continue(new ReturnResult(result));
+    } else {
+      process._continue(mapper ? mapper(result) : result.value);
+    }
+  }, options);
+}
 
 function take(channel) {
   return new Instruction(TAKE, channel);
@@ -171,10 +221,6 @@ function offer(channel, value) {
   }
 }
 
-function sleep(msecs) {
-  return new Instruction(SLEEP, msecs);
-}
-
 function alts(operations, options) {
   return new Instruction(ALTS, {
     operations: operations,
@@ -182,13 +228,22 @@ function alts(operations, options) {
   });
 }
 
+function preventClose() {
+  return new Instruction(PREVENT_CLOSE);
+}
+
+function takeOrReturn(chan) {
+  return new Instruction(TAKE_OR_RETURN, chan);
+}
+
 exports.put_then_callback = put_then_callback;
 exports.take_then_callback = take_then_callback;
 exports.put = put;
 exports.take = take;
 exports.offer = offer;
+exports.preventClose = preventClose;
+exports.takeOrReturn = takeOrReturn;
 exports.poll = poll;
-exports.sleep = sleep;
 exports.alts = alts;
 exports.Instruction = Instruction;
 exports.Process = Process;
