@@ -103,8 +103,10 @@ Process.prototype.run = function(response) {
   // uncaught exception will crash some runtimes (e.g. Node)
   var iter;
   if (response instanceof ErrorResult) {
+    this.isClosing = true;
     iter = this.gen['throw'](response.value);
   } else if (response instanceof ReturnResult) {
+    this.isClosing = true;
     iter = this.gen['return'](response.value);
   } else {
     iter = this.gen.next(response);
@@ -151,11 +153,8 @@ Process.prototype.run = function(response) {
       break;
 
     case PREVENT_CLOSE:
-      this.preventClose = true;
-      var data = ins.data;
-      if (!this.closeChannel) {
-      }
-      this._continue(closeChannel);
+      this.manualClose = true;
+      this._continue(this.closeChannel);
       break;
 
     }
@@ -171,7 +170,7 @@ Process.prototype.run = function(response) {
 function altsWithClose(process, _operations, options, mapper) {
   var operations = _operations.slice();
 
-  if (!process.manualClose) {
+  if (!process.manualClose && !process.isClosing) {
     operations.unshift(process.closeChannel);
   }
 

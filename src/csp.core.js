@@ -5,6 +5,7 @@ var channels = require("./impl/channels");
 var select = require("./impl/select");
 var process = require("./impl/process");
 var timers = require("./impl/timers");
+var dispatch = require("./impl/dispatch");
 
 function spawn(gen, creator) {
   var ch = channels.chan(buffers.fixed(1));
@@ -69,5 +70,8 @@ module.exports = {
   takeOrReturn: process.takeOrReturn,
   NO_VALUE: process.NO_VALUE,
 
-  timeout: timers.timeout
+  timeout: timers.timeout,
+
+  set_queue_dispatcher: dispatch.set_queue_dispatcher,
+  set_queue_delayer: dispatch.set_queue_delayer
 };

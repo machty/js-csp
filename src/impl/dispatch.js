@@ -77,6 +77,25 @@ exports.run = function (f) {
   queue_dispatcher();
 };
 
+var queue_delayer;
 exports.queue_delay = function(f, delay) {
-  setTimeout(f, delay);
+  if (queue_delayer) {
+    queue_delayer(f, delay);
+  } else {
+    setTimeout(f, delay);
+  }
 };
+
+exports.set_queue_dispatcher = function(handler) {
+  queue_dispatcher = function() {
+    if (!(queued && running)) {
+      queued = true;
+      handler(process_messages);
+    }
+  };
+}
+
+exports.set_queue_delayer = function(handler) {
+  queue_delayer = handler;
+}
+
